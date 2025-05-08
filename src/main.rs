@@ -4,15 +4,20 @@
 #![no_std]
 #![no_main]
 
+use adafruit_feather_rp2040::pac::{interrupt, USBCTRL_DPRAM};
 use bsp::entry;
 use defmt::*;
 use defmt_rtt as _;
 use embedded_hal::digital::OutputPin;
+use fugit::ExtU32;
 use panic_probe as _;
+
+use cortex_m::prelude::*;
 
 // Provide an alias for our BSP so we can switch targets quickly.
 // Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
-use rp_pico as bsp;
+use adafruit_feather_rp2040::hal;
+use adafruit_feather_rp2040::{self as bsp, hal::usb::UsbBus};
 // use sparkfun_pro_micro_rp2040 as bsp;
 
 use bsp::hal::{
@@ -21,12 +26,19 @@ use bsp::hal::{
     sio::Sio,
     watchdog::Watchdog,
 };
+use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid};
+use usb_device::{bus::UsbBusAllocator, device::UsbDevice};
+
+use cortex_m::interrupt::free as run_without_interrupts;
+use usbd_human_interface_device::page::Keyboard;
+use usbd_human_interface_device::prelude::UsbHidClassBuilder;
+use usbd_human_interface_device::UsbHidError;
 
 #[entry]
 fn main() -> ! {
     info!("Program start");
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
+    let mut core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
 
@@ -43,6 +55,8 @@ fn main() -> ! {
     )
     .ok()
     .unwrap();
+
+    let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
@@ -62,16 +76,72 @@ fn main() -> ! {
     // If you have a Pico W and want to toggle a LED with a simple GPIO output pin, you can connect an external
     // LED to one of the GPIO pins, and reference that pin here. Don't forget adding an appropriate resistor
     // in series with the LED.
-    let mut led_pin = pins.led.into_push_pull_output();
+    let mut led_pin = pins.d13.into_push_pull_output();
+
+    let usb_bus = UsbBusAllocator::new(UsbBus::new(
+        pac.USBCTRL_REGS,
+        pac.USBCTRL_DPRAM,
+        clocks.usb_clock,
+        true,
+        &mut pac.RESETS,
+    ));
+
+    let mut keyboard = UsbHidClassBuilder::new()
+        .add_device(usbd_human_interface_device::device::keyboard::BootKeyboardConfig::default())
+        .build(&usb_bus);
+
+    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0001))
+        .strings(&[StringDescriptors::default()
+            .manufacturer("Dylan Bulfin")
+            .product("Boot keyboard")
+            .serial_number("TEST")])
+        .unwrap()
+        .build();
+
+    let mut tick_count_down = timer.count_down();
+    tick_count_down.start(1.millis());
+
+    let mut swap_count_down = timer.count_down();
+    swap_count_down.start(500.millis());
+
+    let mut curr_press_state = false;
 
     loop {
-        info!("on!");
-        led_pin.set_high().unwrap();
-        delay.delay_ms(500);
-        info!("off!");
-        led_pin.set_low().unwrap();
-        delay.delay_ms(500);
+        // info!("on!");
+        // led_pin.set_high().unwrap();
+        // delay.delay_ms(500);
+        // info!("off!");
+        // led_pin.set_low().unwrap();
+        // delay.delay_ms(500);
+
+        if tick_count_down.wait().is_ok() {
+            match keyboard.tick() {
+                Err(UsbHidError::WouldBlock) | Ok(_) => {}
+                Err(e) => core::panic!("Failed to process keyboard tick: {:?}", e),
+            }
+        }
+
+        if swap_count_down.wait().is_ok() {
+            curr_press_state = !curr_press_state;
+
+            match keyboard.device().write_report([if curr_press_state {
+                Keyboard::A
+            } else {
+                Keyboard::NoEventIndicated
+            }]) {
+                Err(UsbHidError::Duplicate) | Err(UsbHidError::WouldBlock) | Ok(_) => {}
+                Err(e) => core::panic!("Unexpected exception: {:?}", e),
+            }
+
+            if curr_press_state {
+                led_pin.set_high().unwrap();
+            } else {
+                led_pin.set_low().unwrap();
+            }
+        }
+
+        if usb_dev.poll(&mut [&mut keyboard]) {
+            keyboard.device().read_report();
+        }
     }
 }
-
-// End of file

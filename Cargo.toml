@@ -14,14 +14,21 @@ defmt-rtt = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
 
 # We're using a Pico by default on this template
-rp-pico = "0.9"
+# rp-pico = "0.9"
+
 
 # but you can use any BSP. Uncomment this to use the pro_micro_rp2040 BSP instead
 # sparkfun-pro-micro-rp2040 = "0.8"
+adafruit-feather-rp2040 = "0.8.0"
 
 # If you're not going to use a Board Support Package you'll need these:
 # rp2040-hal = { version="0.11", features=["rt", "critical-section-impl"] }
 # rp2040-boot2 = "0.3"
+
+usb-device = "0.3.1"
+panic-halt = "0.2.0"
+usbd-human-interface-device = { version = "0.5.1", features = ["defmt"] }
+fugit = "0.3.7"
 
 # cargo build/run
 [profile.dev]
