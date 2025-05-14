@@ -4,23 +4,27 @@
 #![no_std]
 #![no_main]
 
-use adafruit_feather_rp2040::pac::{interrupt, USBCTRL_DPRAM};
-use bsp::entry;
+use rp2040_boot2;
+#[link_section = ".boot2"]
+#[used]
+pub static BOOT_LOADER: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
+
+use rp2040_hal::{
+    self as hal, entry,
+    gpio::{DynFunction, DynPinId, FunctionSio, Pin, Pins, PullDown, PullUp, SioInput, SioOutput},
+    usb::UsbBus,
+    Timer,
+};
+
 use defmt::*;
 use defmt_rtt as _;
-use embedded_hal::digital::OutputPin;
+use embedded_hal::digital::{InputPin, OutputPin};
 use fugit::ExtU32;
 use panic_probe as _;
 
 use cortex_m::prelude::*;
 
-// Provide an alias for our BSP so we can switch targets quickly.
-// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
-use adafruit_feather_rp2040::hal;
-use adafruit_feather_rp2040::{self as bsp, hal::usb::UsbBus};
-// use sparkfun_pro_micro_rp2040 as bsp;
-
-use bsp::hal::{
+use hal::{
     clocks::{init_clocks_and_plls, Clock},
     pac,
     sio::Sio,
@@ -29,7 +33,6 @@ use bsp::hal::{
 use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid};
 use usb_device::{bus::UsbBusAllocator, device::UsbDevice};
 
-use cortex_m::interrupt::free as run_without_interrupts;
 use usbd_human_interface_device::page::Keyboard;
 use usbd_human_interface_device::prelude::UsbHidClassBuilder;
 use usbd_human_interface_device::UsbHidError;
@@ -60,23 +63,12 @@ fn main() -> ! {
 
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
-    let pins = bsp::Pins::new(
+    let pins = Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
-
-    // This is the correct pin on the Raspberry Pico board. On other boards, even if they have an
-    // on-board LED, it might need to be changed.
-    //
-    // Notably, on the Pico W, the LED is not connected to any of the RP2040 GPIOs but to the cyw43 module instead.
-    // One way to do that is by using [embassy](https://github.com/embassy-rs/embassy/blob/main/examples/rp/src/bin/wifi_blinky.rs)
-    //
-    // If you have a Pico W and want to toggle a LED with a simple GPIO output pin, you can connect an external
-    // LED to one of the GPIO pins, and reference that pin here. Don't forget adding an appropriate resistor
-    // in series with the LED.
-    let mut led_pin = pins.d13.into_push_pull_output();
 
     let usb_bus = UsbBusAllocator::new(UsbBus::new(
         pac.USBCTRL_REGS,
@@ -87,7 +79,9 @@ fn main() -> ! {
     ));
 
     let mut keyboard = UsbHidClassBuilder::new()
-        .add_device(usbd_human_interface_device::device::keyboard::BootKeyboardConfig::default())
+        .add_device(
+            usbd_human_interface_device::device::keyboard::NKROBootKeyboardConfig::default(),
+        )
         .build(&usb_bus);
 
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0001))
@@ -101,47 +95,128 @@ fn main() -> ! {
     let mut tick_count_down = timer.count_down();
     tick_count_down.start(1.millis());
 
-    let mut swap_count_down = timer.count_down();
-    swap_count_down.start(500.millis());
+    let mut scan_count_down = timer.count_down();
+    scan_count_down.start(10.millis());
 
-    let mut curr_press_state = false;
+    let mut row_pins: [Pin<DynPinId, FunctionSio<SioInput>, PullDown>; 4] = [
+        pins.gpio4.into_pull_down_input().into_dyn_pin(),
+        pins.gpio5.into_pull_down_input().into_dyn_pin(),
+        pins.gpio6.into_pull_down_input().into_dyn_pin(),
+        pins.gpio7.into_pull_down_input().into_dyn_pin(),
+    ];
+
+    let mut r_col_pins: [Pin<DynPinId, FunctionSio<SioOutput>, PullDown>; 6] = [
+        pins.gpio20.into_push_pull_output().into_dyn_pin(),
+        pins.gpio22.into_push_pull_output().into_dyn_pin(),
+        pins.gpio26.into_push_pull_output().into_dyn_pin(),
+        pins.gpio27.into_push_pull_output().into_dyn_pin(),
+        pins.gpio28.into_push_pull_output().into_dyn_pin(),
+        pins.gpio29.into_push_pull_output().into_dyn_pin(),
+    ];
 
     loop {
-        // info!("on!");
-        // led_pin.set_high().unwrap();
-        // delay.delay_ms(500);
-        // info!("off!");
-        // led_pin.set_low().unwrap();
-        // delay.delay_ms(500);
-
         if tick_count_down.wait().is_ok() {
             match keyboard.tick() {
                 Err(UsbHidError::WouldBlock) | Ok(_) => {}
                 Err(e) => core::panic!("Failed to process keyboard tick: {:?}", e),
             }
-        }
 
-        if swap_count_down.wait().is_ok() {
-            curr_press_state = !curr_press_state;
-
-            match keyboard.device().write_report([if curr_press_state {
-                Keyboard::A
-            } else {
-                Keyboard::NoEventIndicated
-            }]) {
-                Err(UsbHidError::Duplicate) | Err(UsbHidError::WouldBlock) | Ok(_) => {}
-                Err(e) => core::panic!("Unexpected exception: {:?}", e),
-            }
-
-            if curr_press_state {
-                led_pin.set_high().unwrap();
-            } else {
-                led_pin.set_low().unwrap();
-            }
+            watchdog.feed();
         }
 
         if usb_dev.poll(&mut [&mut keyboard]) {
             keyboard.device().read_report();
         }
+
+        if scan_count_down.wait().is_ok() {
+            let keys = do_matrix_scan(&mut row_pins, &mut r_col_pins, timer);
+            // let keys = [Keyboard::Z; 1];
+
+            match keyboard.device().write_report(keys) {
+                Err(UsbHidError::WouldBlock) => {}
+                Err(UsbHidError::Duplicate) => {}
+                Ok(_) => {}
+                Err(e) => {
+                    core::panic!("Failed to write keyboard report: {:?}", e)
+                }
+            }
+        }
     }
+}
+
+const BASE_KEYS: [[Keyboard; 6]; 4] = [
+    [
+        Keyboard::A,
+        Keyboard::B,
+        Keyboard::C,
+        Keyboard::D,
+        Keyboard::E,
+        Keyboard::F,
+    ],
+    [
+        Keyboard::G,
+        Keyboard::H,
+        Keyboard::I,
+        Keyboard::J,
+        Keyboard::K,
+        Keyboard::L,
+    ],
+    [
+        Keyboard::M,
+        Keyboard::N,
+        Keyboard::O,
+        Keyboard::P,
+        Keyboard::Q,
+        Keyboard::R,
+    ],
+    [
+        Keyboard::S,
+        Keyboard::T,
+        Keyboard::U,
+        Keyboard::V,
+        Keyboard::W,
+        Keyboard::X,
+    ],
+];
+
+fn do_matrix_scan(
+    row_pins: &mut [Pin<DynPinId, FunctionSio<SioInput>, PullDown>; 4],
+    col_pins: &mut [Pin<DynPinId, FunctionSio<SioOutput>, PullDown>; 6],
+    timer: Timer,
+) -> [Keyboard; 24] {
+    let mut res: [Keyboard; 24] = [Keyboard::NoEventIndicated; 24];
+
+    for cpin in col_pins.iter_mut() {
+        cpin.set_low().ok();
+    }
+
+    for (c, cpin) in col_pins.iter_mut().enumerate() {
+        {
+            // Wait for debounce
+            let mut bounce_timer = timer.count_down();
+            bounce_timer.start(10.micros());
+            while let Err(_) = bounce_timer.wait() {}
+        }
+
+        // Set High
+        cpin.set_high().ok();
+
+        {
+            // Wait for debounce
+            let mut bounce_timer = timer.count_down();
+            bounce_timer.start(10.micros());
+            while let Err(_) = bounce_timer.wait() {}
+        }
+
+        for (r, rpin) in row_pins.iter_mut().enumerate() {
+            if rpin.is_high().unwrap_or(false) {
+                // Key is active
+                res[6 * r + c] = BASE_KEYS[r][c];
+            }
+        }
+
+        cpin.set_low().ok();
+    }
+
+    res
 }
