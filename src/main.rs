@@ -11,7 +11,7 @@ pub static BOOT_LOADER: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 use rp2040_hal::{
     self as hal, entry,
-    gpio::{DynFunction, DynPinId, FunctionSio, Pin, Pins, PullDown, PullUp, SioInput, SioOutput},
+    gpio::{DynPinId, FunctionSio, Pin, Pins, PullDown, SioInput, SioOutput},
     usb::UsbBus,
     Timer,
 };
@@ -31,7 +31,7 @@ use hal::{
     watchdog::Watchdog,
 };
 use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid};
-use usb_device::{bus::UsbBusAllocator, device::UsbDevice};
+use usb_device::bus::UsbBusAllocator;
 
 use usbd_human_interface_device::page::Keyboard;
 use usbd_human_interface_device::prelude::UsbHidClassBuilder;
@@ -41,11 +41,11 @@ use usbd_human_interface_device::UsbHidError;
 fn main() -> ! {
     info!("Program start");
     let mut pac = pac::Peripherals::take().unwrap();
-    let mut core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
 
     // External high-speed crystal on the pico board is 12Mhz
+    // TODO the elite pi is 133MHz, revisit whether to increase this
     let external_xtal_freq_hz = 12_000_000u32;
     let clocks = init_clocks_and_plls(
         external_xtal_freq_hz,
@@ -60,8 +60,6 @@ fn main() -> ! {
     .unwrap();
 
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     let pins = Pins::new(
         pac.IO_BANK0,
