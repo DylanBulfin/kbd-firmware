@@ -1,4 +1,4 @@
-use std::iter::Peekable;
+use std::{collections::VecDeque, iter::Peekable};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ScanToken {
@@ -40,11 +40,11 @@ impl Bracket {
         right: true,
         ty: BracketType::Square,
     };
-    pub const LCBRK: Self = Self {
+    pub const LCUBRK: Self = Self {
         right: false,
         ty: BracketType::Curly,
     };
-    pub const RCBRK: Self = Self {
+    pub const RCUBRK: Self = Self {
         right: true,
         ty: BracketType::Curly,
     };
@@ -56,16 +56,12 @@ impl From<Bracket> for ScanToken {
     }
 }
 
-pub fn scan_input<I>(into_iter: I) -> Vec<ScanToken>
-where
-    I: IntoIterator<Item = u8>,
-{
-    let mut iter = into_iter.into_iter().peekable();
-    let mut res = Vec::new();
+pub fn scan_input(into_iter: &mut VecDeque<u8>) -> VecDeque<ScanToken> {
+    let mut res = VecDeque::new();
 
     loop {
-        if let Some(c) = iter.next() {
-            res.push(match c {
+        if let Some(c) = into_iter.pop_front() {
+            res.push_back(match c {
                 b'(' => Bracket {
                     right: false,
                     ty: BracketType::Paren,
@@ -99,8 +95,8 @@ where
                 b',' => ScanToken::Comma,
                 b';' => ScanToken::Semicolon,
                 b':' => ScanToken::Colon,
-                b'A'..=b'Z' | b'a'..=b'z' => ScanToken::Ident(scan_string(c, &mut iter)),
-                b'0'..=b'9' => ScanToken::Int(scan_int(c, &mut iter)),
+                b'A'..=b'Z' | b'a'..=b'z' => ScanToken::Ident(scan_string(c, into_iter)),
+                b'0'..=b'9' => ScanToken::Int(scan_int(c, into_iter)),
                 _ => continue,
             });
         } else {
@@ -111,38 +107,36 @@ where
     res
 }
 
-fn scan_string<I>(c: u8, iter: &mut Peekable<I>) -> String
-where
-    I: Iterator<Item = u8>,
-{
+fn scan_string(c: u8, iter: &mut VecDeque<u8>) -> String {
     let mut res = vec![c];
 
     loop {
-        if let Some(c) = iter.peek() {
+        if let Some(c) = iter.front() {
             match c {
-                b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'0'..=b'9' => res.push(*c),
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'0'..=b'9' => {
+                    res.push(iter.pop_front().unwrap())
+                }
                 _ => break,
             }
+        } else {
+            break;
         }
     }
 
     String::from_utf8(res).unwrap_or_default()
 }
 
-fn scan_int<I>(c: u8, iter: &mut Peekable<I>) -> u32
-where
-    I: Iterator<Item = u8>,
-{
+fn scan_int(c: u8, iter: &mut VecDeque<u8>) -> u32 {
     let conv = |cl: u8| cl.saturating_sub(b'0') as u32;
 
     let mut res = conv(c);
 
     loop {
-        if let Some(c) = iter.peek() {
+        if let Some(c) = iter.front() {
             match c {
                 b'0'..=b'9' => {
                     res *= 10;
-                    res += conv(*c);
+                    res += conv(iter.pop_front().unwrap());
                 }
                 _ => break,
             }

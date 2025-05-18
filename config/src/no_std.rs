@@ -1,13 +1,24 @@
 #![no_std]
-const ROWS: u32 = 4;
-const COLS: u32 = 6;
 /// Types to export to the firmware
 
-pub struct Config {
-    options: Options,
-    layers: [Option<Layer>; 10],
+#[macro_export]
+macro_rules! set_rows_and_columns {
+    ($rows:literal, $cols:literal) => {
+        pub const ROWS: usize = $rows;
+        pub const COLS: usize = $cols;
+        pub const KEYS: usize = $rows * $cols;
+    };
 }
 
+set_rows_and_columns!(4, 6);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub options: Options,
+    pub layers: [Option<Layer>; 10],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub tapping_term_ms: Option<u32>,
 }
@@ -158,9 +169,11 @@ pub enum Behavior {
     MomentaryLayer(u32),
     HoldTap(Key, Key),
     None,
+    Transparent, // 🏳️‍⚧️
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
     pub id: u32,
-    pub keys: [[Behavior; COLS as usize]; ROWS as usize],
+    pub keys: [Behavior; (COLS * ROWS) as usize],
 }
